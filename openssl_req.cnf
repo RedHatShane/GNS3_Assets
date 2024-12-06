@@ -1,0 +1,26 @@
+FQDN = gitlab.lab.local
+IP = 192.168.122.102
+
+[ req ]
+prompt			= no
+days			= 365
+default_md		= sha384
+distinguished_name	= req_distinguished_name
+req_extensions		= v3_req
+
+[ req_distinguished_name ]
+countryName		= US
+stateOrProvinceName	= Arizona
+localityName		= Phoenix
+organizationName	= LabLocal
+commonName 		= $FQDN
+
+[ v3_req ]
+basicConstraints	= CA:false
+KeyUsage		= onRepudiation, digitalSignature, keyEncipherment
+extendedKeyUsage	= serverAuth
+subjectAltName		= @sans
+
+[ sans ]
+DNS.0 = $FQDN
+IP.1 = $IP
