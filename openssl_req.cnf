@@ -16,8 +16,8 @@ organizationName	= LabLocal
 commonName 		= $FQDN
 
 [ v3_req ]
-basicConstraints	= CA:false
-KeyUsage		= onRepudiation, digitalSignature, keyEncipherment
+basicConstraints	= CA:FALSE
+keyUsage		= nonRepudiation, digitalSignature, keyEncipherment
 extendedKeyUsage	= serverAuth
 subjectAltName		= @sans
 
