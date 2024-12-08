@@ -1,3 +1,8 @@
+# Basic OpenSSL config for generating a 
+# CSR. FQDN and IP need to be updated.
+# The remainder of req_distinguished_name 
+# may optionally be updated.
+
 FQDN = gitlab.lab.local
 IP = 192.168.122.102
 
