@@ -7,7 +7,23 @@
 ####
 ##########
 
+# Simple hashing function for strings
 
+function Get-StringHash {
+  Param(
+    [Parameter(Mandatory = $true)]
+    [String]$InputString
+  )
+
+  $stringAsStream = [System.IO.MemoryStream]::new()
+  $writer = [System.IO.StreamWriter]::new($stringAsStream)
+  $writer.Write($InputString)
+  $writer.Flush()
+  $stringAsStream.Position = 0
+
+  $HashResult = Get-FileHash -Algorithm SHA256 -InputStream $stringAsStream | Select-Object Hash
+  $HashResult.Hash
+}
 
 
 # Disables IPv6 features:
@@ -212,21 +228,58 @@ function Disable-Services {
     "WaaSMedicSVC",
     "InstallService",
     "DiagTrack",
-    "WSearch"
+    "WSearch",
+    "AxInstSV",
+    "BITS",
+    "bthserv",
+    "DiagTrack",
+    "DoSvc",
+    "iphlpsvc",
+    "lmhosts",
+    "Wcmsvc",
+    "WerSvc",
+    "WinHttpAutoProxySvc"
   )
 
   foreach ($Service in $Services) {
+    $RuleName = "Block $Service"
+    $RuleDisplayGroup = "Scripted Rules"
+    $RuleProfile = "Any"
+
+    $InboundHash = "{0}{1}{2}Inbound" -f $RuleName, $RuleDisplayGroup, $RuleProfile
+    $OutboundHash = "{0}{1}{2}Outbound" -f $RuleName, $RuleDisplayGroup, $RuleProfile
+    
+    $RuleIdentifiers = @{
+      "InboundHash"  = Get-StringHash("{0}{1}{2}Inbound" -f $RuleName, $RuleDisplayGroup, $RuleProfile)
+      "OutboundHash" = Get-StringHash("{0}{1}{2}Outbound" -f $RuleName, $RuleDisplayGroup, $RuleProfile)
+    }
+
     try {
       Get-Service -Name $Service | Set-Service -StartupType Disabled -ErrorAction SilentlyContinue | Stop-Service -Force -NoWait -ErrorAction Stop 
       Write-Host -ForegroundColor Green "`tStopped $Service"
-      New-NetFirewallRule -DisplayName "Block $Service inbound" -Direction Inbound `
-        -Profile Any -Service $Service -Action Block `
-        -Enabled True -Group "Scripted" -ErrorAction Stop | Out-Null
-      Write-Host -ForegroundColor Green "`tBlocked $Service inbound"
-      New-NetFirewallRule -DisplayName "Block $Service inbound" -Direction Outbound `
-        -Profile Any -Service $Service -Action Block `
-        -Enabled True -Group "Scripted" -ErrorAction Stop | Out-Null
-      Write-Host -ForegroundColor Green "`tBlocked $Service outbound"
+      Write-Host "`tChecking if $Service is blocked inbound"
+      $InboundRuleExists = Get-NetFirewallRule -Name $RuleIdentifiers["InboundHash"] -ErrorAction SilentlyContinue
+      if ($InboundRuleExists) {
+        Write-Host -ForegroundColor Green "`t$Service already blocked inbound."
+      }
+      else {
+        New-NetFirewallRule -DisplayName "Block $Service" -Name $RuleIdentifiers["InboundHash"] -Direction Inbound `
+          -Profile "$RuleProfile" -Service $Service -Action Block `
+          -Enabled True -Group "$RuleDisplayGroup" -ErrorAction Stop | Out-Null
+        Write-Host -ForegroundColor Green "`tBlocked $Service inbound"
+      }
+      
+      Write-Host "`tChecking if $Service is blocked outbound."
+      $OutboundRuleExists = Get-NetFirewallRule -Name $RuleIdentifiers["OutboundHash"] -ErrorAction SilentlyContinue
+      if ($OutboundRuleExists) {
+        Write-Host -ForegroundColor Green "`t$Service already blocked outbound."
+      }
+      else {
+        New-NetFirewallRule -DisplayName "Block $Service" -Name $RuleIdentifiers["OutboundHash"] -Direction Outbound `
+          -Profile $RuleProfile -Service $Service -Action Block `
+          -Enabled True -Group "$RuleDisplayGroup" -ErrorAction Stop | Out-Null
+        Write-Host -ForegroundColor Green "`tBlocked $Service outbound"
+      }
 
     }
     catch {
@@ -248,13 +301,14 @@ function Block-MSUpdateDomains {
   $Hosts_File_Location = "$env:SystemDrive" + "\Windows\System32\drivers\etc\hosts"
   $AlreadyFinished = Select-String -Path $Hosts_File_Location -Pattern "###HostsPresent"
   
+  Write-Host "Checking if hosts file already updated."
   if ($AlreadyFinished -ne $null) {
-    Write-Host "Hosts already appended"
+    Write-Host -ForegroundColor Green "`tHosts already appended"
     return
   }
   else {
-    Write-Host "Appending hosts now"
     Add-Content -Path $Hosts_File_Location -Value "###HostsPresent"
+    Write-Host -ForegroundColor Green "`tAppended hosts."
   }
 
   $BlockedDomains = @(
@@ -277,6 +331,63 @@ function Block-MSUpdateDomains {
 }
 
 
+# Modify default MS firewall rules
+# allowing unnecessary traffic
+# Set them to block
+
+function Disable-MSFirewallRules {
+
+  $RuleGroups = @(
+    "Delivery Optimization",
+    "Start",
+    "Windows Media Player Network Sharing Service",
+    "Windows Search",
+    "DiagTrack",
+    "Email and accounts",
+    "Narrator"
+  )
+
+
+  foreach ($RuleGroup in $RuleGroups) {
+    Write-Host "Switching rules in $RuleGroup to 'block.'"
+    $GroupRules = Get-NetFirewallRule -DisplayGroup $RuleGroup
+    foreach ($Rule in $GroupRules) {
+      $Rule | Set-NetFirewallRule -Action Block -Enabled True
+      Write-Host -ForegroundColor Green ("`tBlocked {0}." -f $Rule.DisplayName)
+    }
+  }
+
+}
+  
+
+# Disabled any scheduled tasks we can
+
+function Disable-MSScheduledTasks {
+  $ScheduledTaskPaths = @(
+    "\Microsoft\Windows\CloudExperienceHost\",
+    "\Microsoft\Windows\Speech\",
+    "\Microsoft\Windows\UpdateOrchestrator\",
+    "\Microsoft\Windows\Windows Error Reporting\",
+    "\Microsoft\Windows\WindowsUpdate\"
+  )
+
+  foreach ($ScheduledTaskPath in $ScheduledTaskPaths) {
+    Write-Host "Checking for scheduled tasks in $ScheduledTaskPath"
+    $ScheduledTasks = Get-ScheduledTask -TaskPath $ScheduledTaskPath
+    foreach ($ScheduledTask in $ScheduledTasks) {
+      Write-Host ("`tFound {0}" -f $ScheduledTask.TaskName)
+      try {
+        $ScheduledTask | Disable-ScheduledTask -ErrorAction Stop | Out-Null
+        Write-Host -ForegroundColor Green ("`tDisabled {0}." -f $ScheduledTask.TaskName)
+      }
+      catch [Microsoft.Management.Infrastructure.CimException] {
+        Write-Host -ForegroundColor Yellow ("`tCouldn't disable {0}." -f $ScheduledTask.TaskName)
+      }
+    }
+  }
+
+}
+
 # DEFINE VARIABLES HERE
 
 $EthernetInterface = Get-NetAdapter -Physical 
@@ -290,3 +401,5 @@ Disable-IPv6 -NetAdapter $EthernetInterface
 Set-StaticIPv4Address -NetAdapter $EthernetInterface -IPv4Address $IPv4Address -NetMask $NetMask -DefaultGateway $DefaultGateway -NameServers $NameServers
 Disable-Services
 Block-MSUpdateDomains
+Disable-MSFirewallRules
+Disable-MSScheduledTasks
